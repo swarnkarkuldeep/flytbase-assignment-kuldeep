@@ -1,5 +1,8 @@
 # Account CRM
 
+**Live CRM:** https://flytbase-assignment-kuldeep.vercel.app
+
+
 A live CRM for two customer accounts (drone-in-a-box docks). It reads one MCP API, and for each account answers five questions, with **every number citing the id of the record it came from**:
 
 1. **What is the book worth?** Closed, backed-by-a-document, and unbacked money, kept apart. There is no single headline total.
