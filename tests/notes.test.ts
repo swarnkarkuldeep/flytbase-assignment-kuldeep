@@ -9,6 +9,7 @@ import { pendingJobs } from "../lib/plan.ts";
 const have = fs.existsSync("snapshot/get_my_accounts.json") && fs.existsSync("snapshot/file.flight_log_force_month.json");
 const t = have ? test : test.skip;
 const analysis = () => analyse(bundleFromSnapshot(), new Date("2026-11-14T10:00:00Z"));
+const N = have ? 6 * analysis().accounts.length : 0; // 3 next steps + 3 risks per account
 
 test("refs are stable and distinct", () => {
   assert.equal(noteRef("A", "next_step", "move:x"), noteRef("A", "next_step", "move:x"));
@@ -18,7 +19,7 @@ test("refs are stable and distinct", () => {
 
 t("plans three next steps and three risks per account, each tagged, within size, citing sources", () => {
   const jobs = planNotes(analysis(), { notes: [] }, "2026-11-14T09:00:00Z", {});
-  assert.equal(jobs.length, 12);
+  assert.equal(jobs.length, 6 * analysis().accounts.length, "3 next steps + 3 risks per account");
   for (const account of ["A", "B"]) {
     const mine = jobs.filter((j) => j.args.account === account);
     assert.equal(mine.filter((j) => j.args.kind === "next_step").length, 3);
@@ -35,7 +36,7 @@ t("plans three next steps and three risks per account, each tagged, within size,
     refs.add(ref);
     assert.match(text, /Sources: /);
   }
-  assert.equal(refs.size, 12, "no two notes share a ref");
+  assert.equal(refs.size, jobs.length, "no two notes share a ref");
   const step1 = jobs.find((j) => j.args.account === "A" && /Next step 1:/.test(String(j.args.title)))!;
   assert.match(String(step1.args.text), /Owner: You \(CSM\)/);
   assert.match(String(step1.args.text), /Due: 2026-11-17/);
@@ -47,15 +48,15 @@ t("duplicates: anything already in list_notes, or already written, is skipped", 
   const first = all[0], second = all[1], third = all[2];
   // visible in list_notes (any shape): skipped
   const notes = { notes: [{ id: 1, text: String(first.args.text) }] };
-  assert.equal(planNotes(a, notes, "x", {}).length, 11);
-  assert.equal(planNotes(a, JSON.stringify(notes), "x", {}).length, 11, "even if the shape is odd");
+  assert.equal(planNotes(a, notes, "x", {}).length, N - 1);
+  assert.equal(planNotes(a, JSON.stringify(notes), "x", {}).length, N - 1, "even if the shape is odd");
   // recorded as written: skipped
-  assert.equal(planNotes(a, { notes: [] }, "x", { [refOf(second)!]: { status: "written", at: "2026-11-14T09:30:00Z" } }).length, 11);
+  assert.equal(planNotes(a, { notes: [] }, "x", { [refOf(second)!]: { status: "written", at: "2026-11-14T09:30:00Z" } }).length, N - 1);
   // a write that errored ("unknown") is NOT repeated until a later list_notes shows it missing
   const unknown = { [refOf(third)!]: { status: "unknown" as const, at: "2026-11-14T09:30:00Z" } };
-  assert.equal(planNotes(a, { notes: [] }, "2026-11-14T09:00:00Z", unknown).length, 11, "list_notes older than the failure: wait");
-  assert.equal(planNotes(a, { notes: [] }, "2026-11-14T09:45:00Z", unknown).length, 12, "newer list_notes still lacks it: redo");
-  assert.equal(planNotes(a, { notes: [{ text: String(third.args.text) }] }, "2026-11-14T09:45:00Z", unknown).length, 11, "it had landed: skip");
+  assert.equal(planNotes(a, { notes: [] }, "2026-11-14T09:00:00Z", unknown).length, N - 1, "list_notes older than the failure: wait");
+  assert.equal(planNotes(a, { notes: [] }, "2026-11-14T09:45:00Z", unknown).length, N, "newer list_notes still lacks it: redo");
+  assert.equal(planNotes(a, { notes: [{ text: String(third.args.text) }] }, "2026-11-14T09:45:00Z", unknown).length, N - 1, "it had landed: skip");
 });
 
 t("risks written back are the highest severity, overdue first on ties", () => {

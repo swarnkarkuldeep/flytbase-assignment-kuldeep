@@ -138,7 +138,7 @@ export default function Crm() {
             )}
           </div>
         </div>
-        {accounts.length > 0 && (
+        {(accounts.length > 0 || (analysis?.pending.length ?? 0) > 0) && (
           <div className="hud-in select" role="tablist" aria-label="Accounts">
             {accounts.map((a) => (
               <button key={a.id} role="tab" type="button" className="tile" aria-selected={a.id === current?.id} onClick={() => pick(a.id)}>
@@ -148,6 +148,15 @@ export default function Crm() {
                   <small>{money(a.q1.totals.closed.amount, a.currency)} closed, {money(a.q1.totals.unbacked.amount, a.currency)} unbacked</small>
                 </span>
               </button>
+            ))}
+            {(analysis?.pending ?? []).map((p) => (
+              <div key={p.id} className="tile pending" role="status" title={`Waiting for: ${p.waitingFor.join(", ")}`}>
+                <span className="tile-letter">{p.id}</span>
+                <span className="tile-text">
+                  <b>{p.name ?? `New account ${p.id}`}</b>
+                  <small>New account: fetching its data</small>
+                </span>
+              </div>
             ))}
           </div>
         )}
@@ -186,8 +195,8 @@ export default function Crm() {
               <p className="foot">
                 Everything here is computed by rules from the stored MCP data; no model writes any of it. Open any tag to see the raw record or file behind a number.
                 Discovery data as of {data?.held.dataAsOf?.slice(0, 16).replace("T", " ")} UTC.
-                {analysis?.clock.shifted
-                  ? ` Today is treated as ${analysis.clock.world.slice(0, 10)}, the date of the latest live event (${analysis.clock.because}); the real date is ${analysis.clock.real.slice(0, 10)}.`
+                {current.clock.shifted
+                  ? ` For this account, today is treated as ${current.clock.world.slice(0, 10)}, the date of its latest live event (${current.clock.because}); the real date is ${current.clock.real.slice(0, 10)}.`
                   : ` Analysis run at ${current.asOf.slice(11, 16)} UTC.`}
               </p>
             </>

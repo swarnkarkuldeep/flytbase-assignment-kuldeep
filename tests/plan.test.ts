@@ -79,5 +79,8 @@ test("whoami: signal count mismatch and new accounts trigger fetches", () => {
   const sig = jobsForWhoami({ signals: 2 }, 0, new Set());
   assert.equal(sig[0].tool, "get_signals");
   const fresh = jobsForWhoami({ signals: 0, new_accounts: ["C"], pack: [{ account: "C", open: true }] }, 0, new Set());
-  assert.deepEqual(fresh.map((j) => j.tool), ["get_my_accounts", "get_all_paperwork"]);
+  // an account released later is read with get_new_account (get_my_accounts never lists it), plus its paperwork
+  assert.deepEqual(fresh.map((j) => j.tool + ":" + JSON.stringify(j.args)), ['get_new_account:{"account":"C"}', 'get_all_paperwork:{"account":"C"}']);
+  // once we hold its export and paperwork there is nothing left to fetch for it
+  assert.equal(jobsForWhoami({ signals: 0, new_accounts: ["C"], pack: [{ account: "C", open: true }] }, 0, new Set(["drop:C", "paperwork:C"])).length, 0);
 });

@@ -16,6 +16,8 @@ export interface AccountDeadline { text: string; minute?: number; passed?: boole
 export interface Account {
   id: string; name: string; official_story?: string;
   stakeholders: Stakeholder[]; facts: Fact[]; opportunities: Opportunity[]; offers?: Offer[]; deadlines: AccountDeadline[];
+  /** set on accounts released later: the clock of the export they came in, so their `minute` fields can become dates */
+  export_meta?: { exported_at: string; minute: number };
 }
 export interface FileRef { id: string; title: string; path: string; account?: string }
 export interface Export { format: string; player: string; exported_at: string; minute: number; world_closed: boolean; accounts: Account[]; files: FileRef[] }

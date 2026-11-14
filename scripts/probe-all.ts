@@ -15,4 +15,4 @@ for (const acc of a.accounts) {
   for (const g of acc.q5) console.log(`[${g.kind}] ${g.title.slice(0, 110)}\n      ask: ${g.whoCouldFill.map((w) => w.who.split(" (")[0]).join(", ") || "(nobody identified)"}`);
 }
 console.log("\nsignals:", a.signals.length);
-if (process.env.MOVES) for (const acc of a.accounts) { if (only && acc.id !== only) continue; console.log(`\n== ${acc.id} clock ${a.clock.world} shifted=${a.clock.shifted}`); for (const m of acc.q3.top) console.log(`#${m.rank} ${m.score.total} ${m.title}\n    due ${m.due} | deals: ${m.dealTitles.join("; ")} | inside: ${m.insideDeadlines.map((d) => d.label + " " + d.date).join(" | ")}\n    sources: ${m.sources.slice(0, 6).join(", ")}`); }
+if (process.env.MOVES) for (const acc of a.accounts) { if (only && acc.id !== only) continue; console.log(`\n== ${acc.id} clock ${acc.clock.world} shifted=${acc.clock.shifted}`); for (const m of acc.q3.top) console.log(`#${m.rank} ${m.score.total} ${m.title}\n    due ${m.due} | deals: ${m.dealTitles.join("; ")} | inside: ${m.insideDeadlines.map((d) => d.label + " " + d.date).join(" | ")}\n    sources: ${m.sources.slice(0, 6).join(", ")}`); }

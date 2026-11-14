@@ -135,7 +135,9 @@ export function buildGaps(inp: GapInputs): Gap[] {
     const factIds = entry.sources.filter((s) => A.facts.some((f) => f.id === s));
     const asks = [...factSpeakers(ctx, factIds), ...(main ? [main] : [])];
     push({
-      id: `gap:q2:${k}`, kind: "unknown", title: k === "pays:offer-budget" ? `Whose budget pays for the offers: ${deals.join("; ")}` : `${entry.role === "decides" ? "Who signs" : "Who pays"}: ${entry.who.replace(/^Unknown:\s*/, "")}`,
+      id: `gap:q2:${k}`, kind: "unknown", title: k === "pays:offer-budget" ? `Whose budget pays for the offers: ${deals.join("; ")}`
+        : /^Unknown: (who signs this|who pays)$/.test(entry.who) ? `Who ${entry.role === "decides" ? "signs" : "pays"} for ${deals.map((d) => `"${d}"`).join("; ")}?`
+        : `${entry.role === "decides" ? "Who signs" : "Who pays"}: ${entry.who.replace(/^Unknown:\s*/, "")}`,
       whyItMatters: `${entry.why} It affects ${deals.slice(0, 3).join("; ")}${deals.length > 3 ? ` and ${deals.length - 3} more` : ""}.`,
       whoCouldFill: dedupeAsks(asks), sources: entry.sources,
     });
@@ -197,7 +199,7 @@ export function buildGaps(inp: GapInputs): Gap[] {
   if (idle) {
     const n = idle.byClass.never_flew.length + idle.byClass.went_quiet.length + idle.byClass.rarely.length;
     if (n > 0) push({
-      id: "gap:idle-why", kind: "unknown", title: `Why do ${n} docks barely fly?`,
+      id: "gap:idle-why", kind: "unknown", title: n === 1 ? "Why does the dock barely fly?" : `Why do ${n} docks barely fly?`,
       whyItMatters: "The data shows that they do not fly, not why. The fix differs: no operator, no schedule, a connectivity fault, or no wish to fly.",
       whoCouldFill: dedupeAsks([...whoSpokeAbout(ctx, /\b(fly|flying|flew|usage)\b/i), ...(main ? [main] : [])]), sources: idle.sources,
     });

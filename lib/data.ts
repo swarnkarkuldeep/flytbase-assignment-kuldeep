@@ -3,6 +3,7 @@ import type { Store } from "./store.ts";
 import type { Envelope, Export, Meta, Paperwork, Signal, TeamMember, Whoami, Job, PaperRecord } from "./types.ts";
 import { normalizeSignals } from "./plan.ts";
 import { overlaySignalRecords } from "./analysis/inline.ts";
+import { mergeDrops } from "./analysis/drops.ts";
 
 export const emptyMeta = (): Meta => ({ lastCallAt: null, calls: 0, alt: "get_signals", fails: {}, log: [] });
 
@@ -24,6 +25,24 @@ export async function getData<T>(store: Store, key: string): Promise<Envelope<T>
   return store.get<Envelope<T>>(`data:${key}`);
 }
 
+/**
+ * The discovery export, plus any accounts released later (get_new_account returns the same shape as
+ * get_my_accounts). Merged into one Export so the rest of the code does not care where an account came from.
+ */
+export async function loadExport(store: Store, index?: Index): Promise<Envelope<Export> | null> {
+  const base = await getData<Export>(store, "accounts");
+  if (!base) return null;
+  const idx = index ?? (await getIndex(store));
+  const dropKeys = Object.keys(idx).filter((k) => k.startsWith("drop:"));
+  if (!dropKeys.length) return base;
+  const drops: { data: unknown; at: string }[] = [];
+  for (const k of dropKeys) {
+    const env = await getData<unknown>(store, k);
+    if (env) drops.push({ data: env.data, at: env.at });
+  }
+  return { at: base.at, data: mergeDrops(base.data, drops) };
+}
+
 export const getMeta = async (store: Store) => (await store.get<Meta>("meta")) ?? emptyMeta();
 export const getQueue = async (store: Store) => (await store.get<Job[]>("queue")) ?? [];
 
@@ -42,7 +61,7 @@ export interface Bundle {
 
 export async function loadBundle(store: Store): Promise<Bundle> {
   const index = await getIndex(store);
-  const accounts = await getData<Export>(store, "accounts");
+  const accounts = await loadExport(store, index);
   const ids = accounts?.data.accounts.map((a) => a.id) ?? [];
   const paperwork: Record<string, PaperRecord[]> = {};
   for (const id of ids) {

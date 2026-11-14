@@ -28,6 +28,9 @@ export interface MoveInputs {
 }
 
 const stem = (w: string) => w.replace(/ies$/, "y").replace(/s$/, "");
+/** does the text name this person, by first or last name? ("promised to Dana" names Dana Whitfield) */
+const namesPerson = (text: string, fullName: string) =>
+  fullName.replace(/^Insp\.\s*/i, "").split(/\s+/).filter((w) => w.length >= 3).some((w) => new RegExp(`\\b${w}\\b`, "i").test(text));
 const mentionsName = (a: string, b: string) => !!a && !!b && (a.toLowerCase().includes(b.toLowerCase()) || b.toLowerCase().includes(a.toLowerCase()));
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -150,6 +153,7 @@ export function buildMoves(inp: MoveInputs): { top: Move[]; considered: Move[] }
     g.sigs.push(sg); g.texts.push(sg.text);
     groups.set(k, g);
   }
+  const claimedDeadlines = new Set<string>(); // dated deadlines already folded into another move
   for (const [key, g] of groups) {
     const personIds = g.person ? [g.person] : [];
     const text = g.texts.join(" ");
@@ -165,7 +169,6 @@ export function buildMoves(inp: MoveInputs): { top: Move[]; considered: Move[] }
     const ofEvent = g.items.filter((i) => i.sources.some((s) => sigSrc.has(s))); // the event's own email and ticket row
     const older = g.items.filter((i) => !ofEvent.includes(i));
     const waited = older.reduce((m, i) => Math.max(m, i.kind === "followup" ? Math.min(i.ageDays ?? 0, 30) : (i.ageDays ?? 0)), 0);
-    const owed = g.items.some((i) => i.weOwe) || g.sigs.length > 0;
     const dls: Deadline[] = [];
     for (const sg of g.sigs) {
       const body = sg.date ? sg.text.replace(sg.date, "") : sg.text;
@@ -175,8 +178,32 @@ export function buildMoves(inp: MoveInputs): { top: Move[]; considered: Move[] }
       else if (month) dls.push({ label: `Month named in the live event (no day given, counted from the 1st)`, date: iso(month), derived: true, sources: sg.sources });
       if (/this week/i.test(sg.text) && sg.date) dls.push({ label: `"this week" in the live event of ${sg.date}`, date: iso(addDays(ymd(sg.date), 7)), derived: true, sources: sg.sources });
     }
+    // a dated deadline that names this person ("Go-live plan promised to Dana") belongs with their asks
+    const who = g.person ? ctx.account.stakeholders.find((s) => s.id === g.person) : undefined;
+    const attached: string[] = [];
+    let promised = false;
+    for (const d of deadlines.dated) {
+      if (d.passed || !who || !namesPerson(d.text, who.name)) continue;
+      dls.push({ label: d.text, date: d.date, derived: true, sources: d.sources });
+      attached.push(`Deadline ${d.date}: ${d.text} (${d.how}).`);
+      claimedDeadlines.add(d.text);
+      if (/\bpromis\w*/i.test(d.text)) promised = true;
+      const row = d.dealId ? q1.rows.find((r) => r.id === d.dealId) : undefined;
+      if (row && !linked.rows.some((r) => r.id === row.id)) { linked.rows.push(row); linked.why.push(`"${d.text}" is a deadline on "${row.title}"`); }
+      // a promise to someone rides on the open deals they are the evidence for
+      if (!d.dealId && /\bpromis\w*/i.test(d.text)) {
+        for (const o of ctx.account.opportunities) {
+          if (o.stage === "agreed" || o.stage === "cleared") continue;
+          const theirs = ctx.account.facts.some((f) => o.evidence.includes(f.id) && ctx.stakeholderByName(f.said_by)?.id === who.id);
+          const orow = q1.rows.find((r) => r.id === o.id);
+          if (theirs && orow && !linked.rows.some((r) => r.id === orow.id)) { linked.rows.push(orow); linked.why.push(`${who.name} is the evidence for the open deal "${orow.title}", and we promised ${who.name} something by ${d.date}`); }
+        }
+      }
+    }
+    const owed = g.items.some((i) => i.weOwe) || g.sigs.length > 0 || promised;
     const sold = linked.rows.filter((r) => r.type === "offer" && r.backed);
     const detail = [
+      ...attached,
       ...g.sigs.map((sg) => `LIVE EVENT${sg.date ? ` (${sg.date})` : ""}: ${sg.title ? `${sg.title}. ` : ""}${sg.text} No FlytBase reply to it is on file.`),
       ...(sold.length && owed ? [`We sold ${sold.map((r) => `"${r.title}"`).join(" and ")} to ${g.label}, so what ${g.label} is asking for is a promise we owe.`] : []),
       ...older.map((i) => `${i.weOwe ? "We owe" : "Chase"}: ${i.title} (since ${i.since}, ${i.ageDays} days). ${i.detail}`),
@@ -202,6 +229,40 @@ export function buildMoves(inp: MoveInputs): { top: Move[]; considered: Move[] }
     });
   }
 
+  // ---- open blockers on deals (a renewal move already lists its own)
+  for (const o of ctx.account.opportunities) {
+    if (o.blocker?.status !== "open") continue;
+    const row = q1.rows.find((r) => r.id === o.id);
+    if (!row || cands.some((c) => c.detail.some((x) => x.includes(o.blocker!.text)))) continue;
+    const dd = deadlines.dated.find((d) => d.dealId === o.id && !d.passed);
+    if (dd) claimedDeadlines.add(dd.text);
+    const proof = o.evidence.map((id) => ctx.account.facts.find((f) => f.id === id)).filter((f) => f?.status === "verified").map((f) => `${f!.said_by} (verified): "${f!.text}"`);
+    const detail = [
+      `Stage "${o.stage}" with an open blocker: ${o.blocker.text}.`,
+      ...(dd ? [`Deadline ${dd.date}: ${dd.text} (${dd.how}).`] : []),
+      ...proof,
+    ];
+    cands.push({
+      id: `move:blocker:${o.id}`, title: `Clear the blocker on "${row.title}": ${o.blocker.text}`, detail, weOwe: false,
+      dls: dd ? [{ label: dd.text, date: dd.date, derived: true, sources: dd.sources }] : [], text: detail.join(" "), ageDays: null,
+      sources: [o.id, ...o.evidence.slice(0, 5)], rows: [row], whyLinked: ["it is the deal the open blocker sits on"],
+    });
+  }
+
+  // ---- any other dated deadline
+  for (const d of deadlines.dated) {
+    if (d.passed || claimedDeadlines.has(d.text)) continue;
+    const owedByUs = /\bpromis\w*|\bwe (?:will|owe)\b/i.test(d.text);
+    const row = d.dealId ? q1.rows.find((r) => r.id === d.dealId) : undefined;
+    const linked = linkDeals(ctx, q1.rows, d.text, ctx.account.stakeholders.filter((s) => namesPerson(d.text, s.name)).map((s) => s.id));
+    const rows = [...(row ? [row] : []), ...linked.rows.filter((r) => r.id !== row?.id)];
+    const detail = [`Deadline ${d.date}: ${d.text} (${d.how}).`];
+    cands.push({
+      id: `move:deadline:${d.text.slice(0, 30)}`, title: `${owedByUs ? "Deliver" : "Prepare for"}: ${d.text}`, detail, weOwe: owedByUs,
+      dls: [{ label: d.text, date: d.date, derived: true, sources: d.sources }], text: d.text, ageDays: null, sources: d.sources, rows, whyLinked: linked.why,
+    });
+  }
+
   // ---- idle docks (plus any live event about docks)
   if (idle) {
     const never = idle.byClass.never_flew, quiet = idle.byClass.went_quiet, rarely = idle.byClass.rarely;
@@ -215,14 +276,14 @@ export function buildMoves(inp: MoveInputs): { top: Move[]; considered: Move[] }
       const sv = q1.evidencedSavings[0];
       const detail = [
         ...idleSignals.map((sg) => `LIVE EVENT${sg.date ? ` (${sg.date})` : ""}: ${sg.text}. No FlytBase reply to it is on file.`),
-        `${n} of ${idle.total} docks barely fly: ${never.length} never flew, ${quiet.length} stopped after flying regularly, ${rarely.length} fly under ${RULES.rarelyPerWeek} a week (weeks ${idle.weeks[0]} to ${idle.weeks[1]}; all docks last seen online ${idle.lastSeenOnline}).`,
+        `${n} of ${idle.total} dock${idle.total === 1 ? "" : "s"} ${n === 1 ? "barely flies" : "barely fly"}: ${never.length} never flew, ${quiet.length} stopped after flying regularly, ${rarely.length} fly under ${RULES.rarelyPerWeek} a week (weeks ${idle.weeks[0]} to ${idle.weeks[1]}; all docks last seen online ${idle.lastSeenOnline}).`,
         ...(quiet.length ? [`Stopped: ${quiet.map((d) => d.dockId).join(", ")}.`] : []),
         ...(never.length ? [`Never flew: ${never.map((d) => d.dockId).join(", ")}.`] : []),
         ...(sv ? [`Documented at stake: ${money(sv.amount, cur)} ${sv.period} insurer saving. ${sv.label}`] : []),
         "Which force or plant each dock sits at is not on file, so the first job is to get the dock-to-site list.",
       ];
       cands.push({
-        id: "move:idle-docks", title: `Find out why ${n} docks barely fly${quiet.length ? ` (start with the ${quiet.length} that stopped)` : ""}${idleSignals.length ? ", prompted by the live event" : ""}`,
+        id: "move:idle-docks", title: `Find out why ${n} dock${n === 1 ? "" : "s"} ${n === 1 ? "barely flies" : "barely fly"}${quiet.length ? ` (start with the ${quiet.length} that stopped)` : ""}${idleSignals.length ? ", prompted by the live event" : ""}`,
         detail, weOwe: idleSignals.length > 0, dls, text: detail.join(" "), ageDays: idleSignals[0]?.date ? Math.max(0, daysBetween(ymd(idleSignals[0].date), ctx.now)) : null,
         sources: [...idle.sources, ...idleSignals.flatMap((s) => s.sources), ...(sv ? sv.sources : [])], rows: linkedRows, whyLinked: ["idle docks undermine the renewal case"], hasSignal: idleSignals.length > 0,
         extraBacked: sv && /idle|not flown|regular|patrol/i.test(`${sv.label} ${ctx.account.facts.map((f) => f.text).join(" ")}`) ? { amount: sv.amount, label: `${money(sv.amount, cur)} ${sv.period} documented saving`, sources: sv.sources } : undefined,

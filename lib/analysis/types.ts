@@ -150,6 +150,11 @@ export interface AccountAnalysis {
   signals: SignalView[];
   /** numbers the UI can show in a header strip */
   facts: { label: string; value: string; sources: SourceId[] }[];
+  /**
+   * "Today" for this account's date calculations: the later of the real clock and the latest live event about
+   * it, because the scenario dates its events ahead of the real clock. Each account has its own timeline.
+   */
+  clock: { real: string; world: string; shifted: boolean; because: string | null };
   /** docks by how much they fly (from usage_weekly.csv / flights.csv); null when the account has no usage data */
   fleet: { total: number; active: number; rarely: number; neverFlew: number; wentQuiet: number; weeks: [string, string]; sources: SourceId[] } | null;
   /** days from the analysis time to the contract term end, when the contract states one */

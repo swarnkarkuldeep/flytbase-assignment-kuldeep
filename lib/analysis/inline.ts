@@ -15,14 +15,21 @@ export function overlaySignalRecords(paperwork: Record<string, PaperRecord[]>, s
       const [, account, path] = m;
       const list = out[account];
       const i = list.findIndex((r) => r.path === path);
-      if (i >= 0 && path.endsWith(".csv") && /row to add/i.test(String(rec.note ?? ""))) {
+      if (i >= 0 && path.endsWith(".csv") && /\brows? to add\b/i.test(String(rec.note ?? ""))) {
         const existing = list[i].text ?? "";
         const header = existing.split(/\r?\n/)[0];
         const firstCol = header.split(",")[0];
-        const have = new Set(parseCsv(existing).map((r) => r[firstCol]));
+        const existingRows = parseCsv(existing);
+        // a CSV whose first column is an id (requests.csv) is keyed by it; one where the first column repeats
+        // (usage_weekly.csv: every dock shares a week) is keyed by the whole row
+        const idKeyed = new Set(existingRows.map((r) => r[firstCol])).size === existingRows.length;
+        const keyOf = (r: Record<string, string>) => (idKeyed ? r[firstCol] : JSON.stringify(Object.values(r)));
+        const have = new Set(existingRows.map(keyOf));
         const add = rec.text.split(/\r?\n/).slice(1).filter(Boolean).filter((row) => {
           const parsed = parseCsv(`${header}\n${row}`)[0];
-          return parsed && !have.has(parsed[firstCol]);
+          if (!parsed || have.has(keyOf(parsed))) return false;
+          have.add(keyOf(parsed));
+          return true;
         });
         if (add.length) list[i] = { ...list[i], text: `${existing.trimEnd()}\n${add.join("\n")}\n` };
       } else if (i >= 0) {

@@ -14,15 +14,13 @@ import { money } from "./util.ts";
 import type { AccountAnalysis, SignalView } from "./types.ts";
 
 export interface Analysis {
+  /** true once at least one account can be analysed; accounts still loading are listed in `pending` */
   ready: boolean;
   missing: string[];
   generatedAt: string;
-  /**
-   * "Today" for every date calculation. It is the later of the real clock and the latest live event's date,
-   * because the scenario dates its events ahead of the real clock (e.g. 17 and 18 Nov).
-   */
-  clock: { real: string; world: string; shifted: boolean; because: string | null };
   accounts: AccountAnalysis[];
+  /** accounts released to us whose data has not all arrived yet (e.g. a new account waiting on its paperwork) */
+  pending: { id: string; name: string | null; waitingFor: string[] }[];
   /** every live event, including any that could not be tied to an account */
   signals: SignalView[];
 }
@@ -33,7 +31,7 @@ function attribute(sig: Signal, views: Map<string, SignalView>, ctxs: Ctx[]): st
   if (explicit) return explicit as string;
   const text = JSON.stringify(sig).toLowerCase();
   const byName = ctxs.filter((c) => {
-    const toks = c.account.name.toLowerCase().split(/\s+/).filter((t) => t.length > 5 && !["alliance", "group", "industrial", "counties", "eastern"].includes(t));
+    const toks = c.account.name.toLowerCase().split(/\s+/).filter((t) => t.length > 5 && !["alliance", "group", "industrial", "counties", "eastern", "estates"].includes(t));
     return toks.some((t) => text.includes(t)) || text.includes(c.account.name.toLowerCase());
   });
   if (byName.length === 1) return byName[0].account.id;
@@ -42,47 +40,60 @@ function attribute(sig: Signal, views: Map<string, SignalView>, ctxs: Ctx[]): st
   return best[0]?.n > 0 && best[0].n > (best[1]?.n ?? 0) ? best[0].id : null;
 }
 
-export function analyse(bundle: Bundle, now = new Date()): Analysis {
-  const exp = bundle.accounts?.data;
-  const missing: string[] = [];
-  if (!exp) missing.push("get_my_accounts");
-  const dated = bundle.signals.map((s) => ({ id: String((s as { id?: unknown }).id ?? ""), d: String((s as { dated?: unknown; date?: unknown }).dated ?? (s as { date?: unknown }).date ?? "").slice(0, 10) })).filter((x) => /^\d{4}-\d{2}-\d{2}$/.test(x.d)).sort((a, b) => a.d.localeCompare(b.d));
-  const latest = dated.at(-1);
-  const worldMs = latest ? Date.parse(`${latest.d}T09:00:00Z`) : 0;
-  const shifted = worldMs > now.getTime();
-  const realNow = now;
-  now = shifted ? new Date(worldMs) : now;
-  const out: Analysis = {
-    ready: false, missing, generatedAt: realNow.toISOString(), accounts: [], signals: [],
-    clock: { real: realNow.toISOString(), world: now.toISOString(), shifted, because: shifted ? latest!.id : null },
-  };
-  if (!exp) return out;
-  const paperwork = overlaySignalRecords(bundle.paperwork, bundle.signals); // records carried inline by live events
-  for (const a of exp.accounts) if (!paperwork[a.id]?.length) missing.push(`get_all_paperwork ${a.id}`);
-  if (missing.length) return out;
+const signalDate = (s: Signal) => String((s as { dated?: unknown }).dated ?? (s as { date?: unknown }).date ?? "").slice(0, 10);
 
-  const base = (accountId: string, signals: Signal[]) => {
+export function analyse(bundle: Bundle, now = new Date()): Analysis {
+  const realNow = now;
+  const exp = bundle.accounts?.data;
+  const out: Analysis = { ready: false, missing: [], generatedAt: realNow.toISOString(), accounts: [], pending: [], signals: [] };
+  if (!exp) { out.missing.push("get_my_accounts"); return out; }
+  const paperwork = overlaySignalRecords(bundle.paperwork, bundle.signals); // records carried inline by live events
+
+  // analyse what is ready; list what is still arriving instead of blocking the whole page on it
+  const ready = exp.accounts.filter((a) => paperwork[a.id]?.length);
+  for (const a of exp.accounts) if (!paperwork[a.id]?.length) {
+    out.missing.push(`get_all_paperwork ${a.id}`);
+    out.pending.push({ id: a.id, name: a.name, waitingFor: [`get_all_paperwork ${a.id}`] });
+  }
+  const named = new Map((bundle.whoami?.data.new_accounts ?? []).map((n) => [String((n as { id?: string })?.id ?? n), (n as { name?: string })?.name ?? null]));
+  for (const p of bundle.whoami?.data.pack ?? []) {
+    if (p.open && !exp.accounts.some((a) => a.id === p.account)) {
+      out.missing.push(`get_new_account ${p.account}`);
+      out.pending.push({ id: p.account, name: named.get(p.account) ?? null, waitingFor: [`get_new_account ${p.account}`, `get_all_paperwork ${p.account}`] });
+    }
+  }
+  if (!ready.length) return out;
+
+  // each account has its own timeline: "today" there is the later of the real clock and the latest event about it
+  const mk = (accountId: string, at: Date, signals: Signal[]) => {
     const account = exp.accounts.find((a) => a.id === accountId)!;
     const refs = exp.files.filter((f) => !f.account || f.account === accountId);
+    const meta = account.export_meta ?? { exported_at: exp.exported_at, minute: exp.minute };
     return makeCtx({
-      now, exportedAt: new Date(exp.exported_at), exportMinute: exp.minute, account, records: paperwork[accountId], fileRefs: refs,
+      now: at, exportedAt: new Date(meta.exported_at), exportMinute: meta.minute, account, records: paperwork[accountId], fileRefs: refs,
       files: Object.fromEntries(refs.filter((f) => bundle.files[f.id] !== undefined).map((f) => [f.id, bundle.files[f.id]])), signals, team: bundle.team,
     });
   };
-  const ctxs = exp.accounts.map((a) => base(a.id, bundle.signals));
+  const first = ready.map((a) => mk(a.id, realNow, bundle.signals));
 
   // attribute each signal to an account
   const bySignal = bundle.signals.map((sig) => {
-    const views = new Map(ctxs.map((c) => [c.account.id, viewSignal(sig, c)]));
-    const accountId = attribute(sig, views, ctxs);
-    const view = { ...(views.get(accountId ?? ctxs[0].account.id)!), accountId };
-    return { accountId, view };
+    const views = new Map(first.map((c) => [c.account.id, viewSignal(sig, c)]));
+    const accountId = attribute(sig, views, first);
+    const view = { ...(views.get(accountId ?? first[0].account.id)!), accountId };
+    return { accountId, view, raw: sig };
   });
   out.signals = bySignal.map((s) => s.view);
 
-  for (const ctx of ctxs) {
-    const id = ctx.account.id;
-    const signals = bySignal.filter((s) => s.accountId === id).map((s) => viewSignal(s.view.raw as Signal, ctx)).map((v) => ({ ...v, accountId: id }));
+  for (const c0 of first) {
+    const id = c0.account.id;
+    const mine = bySignal.filter((s) => s.accountId === id);
+    const latest = mine.map((s) => ({ id: String((s.raw as { id?: unknown }).id ?? ""), d: signalDate(s.raw) })).filter((x) => /^\d{4}-\d{2}-\d{2}$/.test(x.d)).sort((a, b) => a.d.localeCompare(b.d)).at(-1);
+    const worldMs = latest ? Date.parse(`${latest.d}T09:00:00Z`) : 0;
+    const shifted = worldMs > realNow.getTime();
+    const world = shifted ? new Date(worldMs) : realNow;
+    const ctx = mk(id, world, bundle.signals);
+    const signals = mine.map((s) => ({ ...viewSignal(s.raw, ctx), accountId: id }));
     const q1 = buildQ1(ctx);
     const items = findOpenItems(ctx);
     const idle = findIdleDocks(ctx);
@@ -97,7 +108,8 @@ export function analyse(bundle: Bundle, now = new Date()): Analysis {
     const cur = ctx.currency;
     const barely = idle ? idle.byClass.never_flew.length + idle.byClass.went_quiet.length + idle.byClass.rarely.length : null;
     out.accounts.push({
-      id, name: ctx.account.name, currency: cur, asOf: now.toISOString(), dataAsOf: exp.exported_at, q1, q2, q3, q4, q5, signals,
+      id, name: ctx.account.name, currency: cur, asOf: world.toISOString(), dataAsOf: ctx.exportedAt.toISOString(), q1, q2, q3, q4, q5, signals,
+      clock: { real: realNow.toISOString(), world: world.toISOString(), shifted, because: shifted ? latest!.id : null },
       fleet: idle ? { total: idle.total, active: idle.byClass.active.length, rarely: idle.byClass.rarely.length, neverFlew: idle.byClass.never_flew.length, wentQuiet: idle.byClass.went_quiet.length, weeks: idle.weeks, sources: idle.sources } : null,
       termEnd: deadlines.termEnd,
       facts: [

@@ -54,16 +54,32 @@ export function buildRisks(inp: RiskInputs): Risk[] {
     });
   }
 
+  // ----- 2b. deadlines that carry a game-clock minute, turned into dates
+  for (const d of deadlines.dated) {
+    if (d.passed) continue;
+    const opp = d.dealId ? ctx.account.opportunities.find((o) => o.id === d.dealId) : undefined;
+    const open = opp?.blocker?.status === "open" ? opp.blocker : null;
+    const p = point(d.date, true, d.how, d.sources);
+    const left = daysBetween(ctx.now, ymd(d.date));
+    out.push({
+      id: `risk:dated:${d.text.slice(0, 30)}`, kind: "deadline", title: `Deadline: ${d.text}`,
+      detail: `Falls on ${d.date} (${left < 0 ? `${-left} days ago` : left === 0 ? "today" : `in ${left} days`}).${open ? ` The deal it rides on, "${opp!.title}", has an open blocker: ${open.text}.` : ""}`,
+      turnsBadOn: p, overdue: isOver(p), severity: 6 + (open ? 2 : 0) + (left <= 7 ? 1 : 0), sources: uniq([...d.sources, ...(opp ? [opp.id, ...opp.evidence.slice(0, 2)] : [])]),
+    });
+  }
+
   // ----- 3. stuck deals: an open blocker on a deal that is not won
   for (const o of ctx.account.opportunities) {
     if (o.blocker?.status !== "open") continue;
     const isRenewal = o.id === renewal?.id;
     const row = q1.rows.find((r) => r.id === o.id);
+    const dd = deadlines.dated.find((d) => d.dealId === o.id && !d.passed);
+    const when = isRenewal ? lead : dd ? point(dd.date, true, dd.how, dd.sources) : null;
     out.push({
       id: `risk:stuck:${o.id}`, kind: "stuck_deal", title: `Stuck: ${o.title}`,
       detail: `Stage "${o.stage}" with an open blocker: ${o.blocker.text}.${row?.value ? ` Worth up to ${money(row.value, cur)} (${row.bucket.replace("_", " ")}).` : ""}`,
-      turnsBadOn: isRenewal ? lead : null, overdue: isRenewal ? isOver(lead) : false,
-      severity: isRenewal ? 7 : row?.backed ? 5 : 3, sources: [o.id, ...o.evidence.slice(0, 3)],
+      turnsBadOn: when, overdue: isOver(when),
+      severity: isRenewal ? 7 : dd ? 7 : row?.backed ? 5 : 3, sources: [o.id, ...o.evidence.slice(0, 3)],
     });
   }
 
@@ -104,7 +120,7 @@ export function buildRisks(inp: RiskInputs): Risk[] {
     const when = rel ? point(rel.date, true, rel.how, rel.sources) : lead;
     const atStake = q1.evidencedSavings[0];
     if (n > 0) out.push({
-      id: "risk:idle-docks", kind: "idle_docks", title: `${n} of ${idle.total} docks barely fly`,
+      id: "risk:idle-docks", kind: "idle_docks", title: `${n} of ${idle.total} dock${idle.total === 1 ? "" : "s"} ${n === 1 ? "barely flies" : "barely fly"}`,
       detail: `${never.length} never flew, ${quiet.length} stopped after flying regularly, ${rarely.length} fly under ${RULES.rarelyPerWeek} a week, although every dock was last seen online ${idle.lastSeenOnline}.${atStake ? ` ${atStake.label} Documented at stake: ${money(atStake.amount, cur)} ${atStake.period}.` : ""}${rel ? ` The review is "${rel.phrase}" (derived date).` : ""}`,
       turnsBadOn: when, overdue: isOver(when), severity: atStake ? 8 : 6, sources: uniq([...idle.sources, ...(atStake?.sources ?? [])]),
     });

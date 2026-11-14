@@ -71,7 +71,7 @@ export function findOpenItems(ctx: Ctx): OpenItem[] {
     if (!msgs.length) continue;
     const last = msgs[msgs.length - 1];
     const fromCustomer = !FLYTBASE_SENDER.test(last.from);
-    const unanswered = /No reply/i.test(trailer) && !/Nobody asked/i.test(trailer);
+    const unanswered = /\bno (?:further )?reply\b/i.test(trailer) && !/Nobody asked/i.test(trailer);
     const unexplored = /Nobody asked/i.test(trailer);
     const waitingAsk = fromCustomer && ASKS.test(last.body) && !trailer;
     if (!(unanswered || unexplored || waitingAsk)) continue;
@@ -233,7 +233,8 @@ export function findIdleDocks(ctx: Ctx): IdleDocks | null {
     total: docks.length, byClass, weeks: [recentW[0], recentW[recentW.length - 1]],
     flightsThrough: flights.length ? flights.map((f) => f.date).sort().at(-1)! : null,
     lastSeenOnline: seen.at(-1) ?? null,
-    sources: [ctx.src("usage_weekly.csv"), ctx.src("flights.csv"), ctx.src("devices.json")],
+    // cite only records that exist (an account released later may have usage but no flight log)
+    sources: ["usage_weekly.csv", "flights.csv", "devices.json"].filter((p) => ctx.rec(p)).map((p) => ctx.src(p)),
   };
 }
 const round1 = (n: number) => Math.round(n * 10) / 10;
@@ -335,6 +336,8 @@ export interface Deadlines {
   relative: { factId: string; phrase: string; date: string; how: string; text: string; sources: SourceId[] }[];
   /** deadlines the data states without a date */
   undated: { dealId: string | null; text: string; soon?: boolean; passed?: boolean; met?: boolean; sources: SourceId[] }[];
+  /** deadlines that carry a game-clock `minute`, turned into real dates (an account released later has these) */
+  dated: { dealId: string | null; text: string; date: string; how: string; passed?: boolean; sources: SourceId[] }[];
 }
 
 const NUM: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12 };
@@ -359,18 +362,30 @@ export function findDeadlines(ctx: Ctx): Deadlines {
     });
   }
   const undated: Deadlines["undated"] = [];
-  for (const d of ctx.account.deadlines ?? []) undated.push({ dealId: null, text: d.text, passed: d.passed, sources: [ctx.account.id] });
+  const dated: Deadlines["dated"] = [];
+  const toDate = (minute: number) => iso(new Date(ctx.exportedAt.getTime() + (minute - ctx.exportMinute) * 60_000));
+  const how = (minute: number) => `minute ${minute} on the game clock; the export was taken at minute ${ctx.exportMinute} (${ctx.exportedAt.toISOString().slice(0, 16)}Z)`;
+  for (const d of ctx.account.deadlines ?? []) {
+    if (typeof d.minute === "number") dated.push({ dealId: null, text: d.text, date: toDate(d.minute), how: how(d.minute), passed: d.passed, sources: [ctx.account.id] });
+    else undated.push({ dealId: null, text: d.text, passed: d.passed, sources: [ctx.account.id] });
+  }
   for (const o of ctx.account.opportunities) {
-    if (o.deadline) undated.push({ dealId: o.id, text: o.deadline.text, soon: o.deadline.soon, passed: o.deadline.passed, met: o.deadline.met, sources: [o.id] });
+    if (!o.deadline) continue;
+    if (typeof o.deadline.minute === "number") dated.push({ dealId: o.id, text: o.deadline.text, date: toDate(o.deadline.minute), how: how(o.deadline.minute), passed: o.deadline.passed, sources: [o.id] });
+    else undated.push({ dealId: o.id, text: o.deadline.text, soon: o.deadline.soon, passed: o.deadline.passed, met: o.deadline.met, sources: [o.id] });
   }
   // the same text can appear on the account and on the deal: keep the deal-linked one
-  const seen = new Set<string>();
-  const dedup = undated.sort((a, b) => (a.dealId ? 0 : 1) - (b.dealId ? 0 : 1)).filter((u) => (seen.has(u.text) ? false : (seen.add(u.text), true)));
+  const dedupe = <T extends { dealId: string | null; text: string }>(xs: T[]) => {
+    const seen = new Set<string>();
+    return xs.sort((a, b) => (a.dealId ? 0 : 1) - (b.dealId ? 0 : 1)).filter((u) => (seen.has(u.text) ? false : (seen.add(u.text), true)));
+  };
+  const dedup = dedupe(undated);
+  const datedDedup = dedupe(dated);
   return {
     termEnd,
     renewalValue: ctx.profile?.renewal?.annual_value ?? null,
     renewalLead: termEnd ? { date: iso(addDays(ymd(termEnd.date), -RULES.renewalLeadDays)), how: `${RULES.renewalLeadDays} days before the term ends (rule)`, sources: termEnd.sources } : null,
-    relative, undated: dedup,
+    relative, undated: dedup, dated: datedDedup,
   };
 }
 

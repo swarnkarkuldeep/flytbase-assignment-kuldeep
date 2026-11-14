@@ -2,7 +2,7 @@
 import type { Store } from "./store.ts";
 import type { Envelope, Export, Job, LogEntry, Meta, Paperwork, Signal, Whoami } from "./types.ts";
 import { callTool, RateLimitError } from "./mcp.ts";
-import { getData, getIndex, getMeta, getQueue, putData } from "./data.ts";
+import { getData, getIndex, getMeta, getQueue, loadExport, putData } from "./data.ts";
 import {
   MIN_GAP_MS, altAfter, dataKeyFor, jobKey, jobsForSignal, jobsForWhoami,
   newSignals, nextJob, normalizeSignals, pendingJobs,
@@ -32,10 +32,17 @@ export interface Status {
 }
 
 async function loadPlanState(store: Store, now: number): Promise<{ s: PlanState; index: Record<string, string> }> {
-  const [meta, queue, index, accounts] = await Promise.all([
-    getMeta(store), getQueue(store), getIndex(store), getData<Export>(store, "accounts"),
+  const [meta, queue, index, base, whoami] = await Promise.all([
+    getMeta(store), getQueue(store), getIndex(store), getData<Export>(store, "accounts"), getData<Whoami>(store, "whoami"),
   ]);
-  return { s: { have: new Set(Object.keys(index)), accounts: accounts?.data ?? null, queue, meta, now }, index };
+  const accounts = await loadExport(store, index);
+  // accounts released after the morning: whoami lists them, but get_my_accounts never will
+  const baseIds = new Set(base?.data.accounts.map((a) => a.id) ?? []);
+  const named = (whoami?.data.new_accounts ?? []).map((n) => (typeof n === "string" ? n : (n as { id?: string; account?: string })?.id ?? (n as { account?: string })?.account));
+  const packIds = (whoami?.data.pack ?? []).filter((p) => p.open).map((p) => p.account);
+  const extra = base ? [...new Set([...named, ...packIds].filter((id): id is string => !!id && !baseIds.has(id)))] : [];
+  const drops = Object.keys(index).filter((k) => k.startsWith("drop:")).map((k) => k.slice(5));
+  return { s: { have: new Set(Object.keys(index)), accounts: accounts?.data ?? null, extra, drops, queue, meta, now }, index };
 }
 
 function statusOf(store: Store, s: PlanState, index: Record<string, string>, extra: Partial<Status> = {}): Status {
@@ -97,7 +104,7 @@ async function afterResult(store: Store, job: Job, data: unknown) {
     const fresh = newSignals(prior ? normalizeSignals(prior.data) : [], normalizeSignals(data));
     changed = fresh.length > 0;
     if (fresh.length) {
-      const accounts = (await getData<Export>(store, "accounts"))?.data;
+      const accounts = (await loadExport(store))?.data;
       const ids = accounts?.accounts.map((a) => a.id) ?? [];
       const paths: Record<string, string[]> = {};
       for (const id of ids) paths[id] = ((await getData<Paperwork>(store, `paperwork:${id}`))?.data.records ?? []).map((r) => r.path);

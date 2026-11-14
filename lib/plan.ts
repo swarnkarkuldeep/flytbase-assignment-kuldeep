@@ -23,6 +23,9 @@ export function dataKeyFor(j: Job): string | null {
     case "whoami": return "whoami";
     case "get_data_format": return "format";
     case "get_my_accounts": return "accounts";
+    // an account released later: its own export (same shape as get_my_accounts) and its files
+    case "get_new_account": return `drop:${a.account}`;
+    case "get_new_account_file": return `file:${a.file_id}`;
     case "get_all_paperwork": return `paperwork:${a.account}`;
     case "get_flytbase_team": return "team";
     case "get_signals": return "signals";
@@ -37,13 +40,17 @@ export interface PlanState {
   /** data keys already stored */
   have: Set<string>;
   accounts: Export | null;
+  /** accounts released after the morning (whoami's pack and new_accounts), whose export comes from get_new_account */
+  extra?: string[];
+  /** the subset of those whose export we already hold; their files are fetched with get_new_account_file */
+  drops?: string[];
   /** explicit, event-driven jobs (signal follow-ups, notes), in order */
   queue: Job[];
   meta: Meta;
   now: number;
 }
 
-const accountIds = (s: PlanState) => (s.accounts?.accounts.map((a) => a.id) ?? ["A", "B"]);
+const accountIds = (s: PlanState) => [...new Set([...(s.accounts?.accounts.map((a) => a.id) ?? ["A", "B"]), ...(s.extra ?? [])])];
 
 /** Everything still to do, in the order it will be done. */
 export function pendingJobs(s: PlanState): Job[] {
@@ -61,7 +68,8 @@ export function pendingJobs(s: PlanState): Job[] {
     { tool: "whoami", args: {}, reason: "initial" },
     { tool: "get_data_format", args: {}, reason: "initial" },
     { tool: "get_my_accounts", args: {}, reason: "initial" },
-    ...accountIds(s).map((account): Job => ({ tool: "get_all_paperwork", args: { account }, reason: "initial" })),
+    // (an account released later is handled just below, export first)
+    ...accountIds(s).filter((id) => !(s.extra ?? []).includes(id)).map((account): Job => ({ tool: "get_all_paperwork", args: { account }, reason: "initial" })),
     { tool: "get_flytbase_team", args: {}, reason: "initial" },
     { tool: "get_signals", args: {}, reason: "initial" },
   ];
@@ -70,9 +78,17 @@ export function pendingJobs(s: PlanState): Job[] {
   if ((s.meta.sincePoll ?? 0) >= MAX_BETWEEN_POLLS && initial.every((j) => s.have.has(dataKeyFor(j)!))) {
     add({ tool: s.meta.alt, args: {}, reason: "poll" });
   }
+  // an account released after the morning needs its own export and its paperwork before anything else
+  for (const id of s.extra ?? []) {
+    if (!s.have.has(`drop:${id}`)) add({ tool: "get_new_account", args: { account: id }, reason: "a new account was released" });
+    if (!s.have.has(`paperwork:${id}`)) add({ tool: "get_all_paperwork", args: { account: id }, reason: "a new account was released" });
+  }
   for (const j of s.queue) add(j);
+  const dropSet = new Set(s.drops ?? []);
   for (const f of s.accounts?.files ?? []) {
-    if (!s.have.has(`file:${f.id}`)) add({ tool: "get_file", args: { id: f.id }, reason: "file behind a deal or fact" });
+    if (s.have.has(`file:${f.id}`)) continue;
+    if (f.account && dropSet.has(f.account)) add({ tool: "get_new_account_file", args: { account: f.account, file_id: f.id }, reason: "file behind a deal or fact (new account)" });
+    else add({ tool: "get_file", args: { id: f.id }, reason: "file behind a deal or fact" });
   }
   if (!s.have.has("notes")) add({ tool: "list_notes", args: {}, reason: "know what is already written back" });
   const other = s.meta.alt === "get_signals" ? "whoami" : "get_signals";
@@ -150,7 +166,8 @@ export function jobsForSignal(sig: Signal, ctx: RefContext): Job[] {
 
   // a signal about docks that stopped flying or went quiet means the usage data may have moved: refresh that
   // account's. (A dock that "fails on the day" is a support question, not a usage change.)
-  if (acctField && /\bdocks?\b/i.test(text) && /\b(flew|flown|flying|idle|offline|no flights|not flown|stopped flying|nothing)\b/i.test(text)) {
+  const carriesUsage = ["usage_weekly.csv", "flights.csv", "device_events.csv"].some((p) => inline.has(p));
+  if (!carriesUsage && acctField && /\bdocks?\b/i.test(text) && /\b(flew|flown|flying|idle|offline|no flights|not flown|stopped flying|nothing)\b/i.test(text)) {
     for (const p of ["usage_weekly.csv", "flights.csv", "device_events.csv"]) paths.add(p);
   }
   for (const p of inline) paths.delete(p);
@@ -177,8 +194,11 @@ export function jobsForWhoami(w: Whoami, storedSignalCount: number, haveKeys: Se
     const id = typeof n === "string" ? n : (n as { id?: string; account?: string })?.id ?? (n as { account?: string })?.account;
     if (id) fresh.add(id);
   }
-  for (const p of w.pack ?? []) if (p.open && !haveKeys.has(`paperwork:${p.account}`)) fresh.add(p.account);
-  if (fresh.size) jobs.push({ tool: "get_my_accounts", args: {}, reason: "whoami reports new accounts" });
-  for (const account of fresh) jobs.push({ tool: "get_all_paperwork", args: { account }, reason: "whoami reports a new account" });
+  // only accounts whoami explicitly calls new. (An account in the pack that we hold no export for is found by
+  // pendingJobs from the pack versus the export; at first run nothing is held yet, so the pack alone proves nothing.)
+  for (const account of fresh) {
+    if (!haveKeys.has(`drop:${account}`)) jobs.push({ tool: "get_new_account", args: { account }, reason: "whoami reports a new account" });
+    if (!haveKeys.has(`paperwork:${account}`)) jobs.push({ tool: "get_all_paperwork", args: { account }, reason: "whoami reports a new account" });
+  }
   return jobs;
 }
