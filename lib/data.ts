@@ -2,6 +2,7 @@
 import type { Store } from "./store.ts";
 import type { Envelope, Export, Meta, Paperwork, Signal, TeamMember, Whoami, Job, PaperRecord } from "./types.ts";
 import { normalizeSignals } from "./plan.ts";
+import { overlaySignalRecords } from "./analysis/inline.ts";
 
 export const emptyMeta = (): Meta => ({ lastCallAt: null, calls: 0, alt: "get_signals", fails: {}, log: [] });
 
@@ -60,13 +61,14 @@ export async function loadBundle(store: Store): Promise<Bundle> {
     if (env) files[f.id] = env.data;
   }
   const sig = await getData<unknown>(store, "signals");
+  const signals = sig ? normalizeSignals(sig.data) : [];
   return {
     whoami: await getData<Whoami>(store, "whoami"),
     accounts,
     team: (await getData<{ people: TeamMember[] }>(store, "team"))?.data.people ?? [],
-    signals: sig ? normalizeSignals(sig.data) : [],
+    signals,
     signalsAt: sig?.at ?? null,
-    paperwork,
+    paperwork: overlaySignalRecords(paperwork, signals),
     files,
     notes: (await getData<unknown>(store, "notes"))?.data ?? null,
     index,

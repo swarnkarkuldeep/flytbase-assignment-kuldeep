@@ -125,6 +125,9 @@ export interface Gap {
 
 export interface SignalView {
   key: string;
+  /** the signal's own title and the part after "Account: " */
+  title: string | null;
+  headline: string | null;
   text: string;
   date: string | null;
   accountId: string | null;

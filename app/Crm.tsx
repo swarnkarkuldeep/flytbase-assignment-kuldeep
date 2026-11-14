@@ -182,10 +182,13 @@ export default function Crm() {
               {(!only || only === 3) && <Q3View a={current} open={setSrc} />}
               {(!only || only === 4) && <Q4View a={current} open={setSrc} />}
               {(!only || only === 5) && <Q5View a={current} open={setSrc} />}
-              {!only && <WrittenBack notes={(data?.held.notes ?? []).filter((n) => n.account === current.id || n.account === null)} pending={(st?.pending ?? []).filter((p) => p.tool === "write_note" && p.args.account === current.id).length} />}
+              {!only && <WrittenBack notes={(data?.held.notes ?? []).filter((n) => n.account === current.id || n.account === null)} pending={(st?.pending ?? []).filter((p) => p.tool === "write_note" && p.args.account === current.id).length} paused={st?.writeback === "paused"} />}
               <p className="foot">
                 Everything here is computed by rules from the stored MCP data; no model writes any of it. Open any tag to see the raw record or file behind a number.
-                Discovery data as of {data?.held.dataAsOf?.slice(0, 16).replace("T", " ")} UTC; analysis run at {current.asOf.slice(11, 16)} UTC.
+                Discovery data as of {data?.held.dataAsOf?.slice(0, 16).replace("T", " ")} UTC.
+                {analysis?.clock.shifted
+                  ? ` Today is treated as ${analysis.clock.world.slice(0, 10)}, the date of the latest live event (${analysis.clock.because}); the real date is ${analysis.clock.real.slice(0, 10)}.`
+                  : ` Analysis run at ${current.asOf.slice(11, 16)} UTC.`}
               </p>
             </>
           )}
@@ -304,6 +307,7 @@ function LiveEvents({ signals, fresh, open, unattributedKeys, dismiss, checkedAt
             {unattributedKeys.has(s.key) && <Badge tone="warn">not tied to an account</Badge>}
             <Chips ids={s.sources} open={open} />
           </div>
+          {s.title && <p className="event-title">{s.title}</p>}
           <p>{s.text}</p>
         </div>
       ))}
@@ -311,14 +315,14 @@ function LiveEvents({ signals, fresh, open, unattributedKeys, dismiss, checkedAt
   );
 }
 
-function WrittenBack({ notes, pending }: { notes: { kind: string | null; title: string }[]; pending: number }) {
+function WrittenBack({ notes, pending, paused }: { notes: { kind: string | null; title: string }[]; pending: number; paused: boolean }) {
   return (
     <section className="win" aria-label="Written back to the MCP">
       <header className="win-bar">
         <span className="hex"><Icon name="scroll" size={16} /></span>
         <h2>Notes this CRM has written to the MCP</h2>
       </header>
-      <p className="win-answer">The top three next steps and top risks are saved with <code>write_note</code> through the same one-call-a-minute queue, once each. {pending > 0 ? `${pending} still queued.` : "Nothing waiting."}</p>
+      <p className="win-answer">The top three next steps and top risks are saved with <code>write_note</code> through the same one-call-a-minute queue, once each. {paused ? <b>Write-back is paused, so nothing is being written.</b> : pending > 0 ? `${pending} still queued.` : "Nothing waiting."}</p>
       <div className="win-body">
         {notes.length === 0 ? <p className="empty">None written yet.</p> : (
           <ul className="list">{notes.map((n, i) => <li key={i}>{n.kind && <Badge tone={n.kind === "risk" ? "warn" : "acc"}>{n.kind.replace("_", " ")}</Badge>} {n.title}</li>)}</ul>

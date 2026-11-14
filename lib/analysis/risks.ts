@@ -3,7 +3,7 @@
 import type { Ctx } from "./ctx.ts";
 import type { ContactTemp, Deadlines, ForceUsageResult, IdleDocks, OpenItem } from "./detect.ts";
 import { RULES } from "./detect.ts";
-import { addDays, daysBetween, findDateInText, iso, money, uniq, ymd } from "./util.ts";
+import { addDays, daysBetween, findDateInText, findMonthInText, iso, money, uniq, ymd } from "./util.ts";
 import type { DatedPoint, Q1, Risk, SignalView, SourceId } from "./types.ts";
 
 export interface RiskInputs {
@@ -138,10 +138,14 @@ export function buildRisks(inp: RiskInputs): Risk[] {
 
   // ----- 9. live events (those not already folded into a move are still shown as risks)
   for (const sg of signals) {
-    const ev = findDateInText(sg.date ? sg.text.replace(sg.date, "") : sg.text, ctx.now);
-    const date = ev ? iso(ev) : sg.date ? iso(addDays(ymd(sg.date), REPLY_SLA_DAYS)) : null;
-    const p = date ? point(date, true, ev ? "the date named in the event" : `event date + ${REPLY_SLA_DAYS} days`, sg.sources) : null;
-    out.push({ id: `risk:signal:${sg.key}`, kind: "signal", title: `Live event with no FlytBase reply: ${sg.text.slice(0, 90)}${sg.text.length > 90 ? "…" : ""}`, detail: sg.text, turnsBadOn: p, overdue: isOver(p), severity: 8, sources: sg.sources });
+    const body = sg.date ? sg.text.replace(sg.date, "") : sg.text;
+    const ev = findDateInText(body, ctx.now);
+    const month = ev ? null : findMonthInText(body, sg.date ? ymd(sg.date) : ctx.now);
+    const date = ev ? iso(ev) : month ? iso(month) : sg.date ? iso(addDays(ymd(sg.date), REPLY_SLA_DAYS)) : null;
+    const how = ev ? "the date named in the event" : month ? "the month named in the event; it gives no day, so counted from the 1st" : `event date + ${REPLY_SLA_DAYS} days`;
+    const p = date ? point(date, true, how, sg.sources) : null;
+    const head = sg.headline ?? `${sg.text.slice(0, 90)}${sg.text.length > 90 ? "…" : ""}`;
+    out.push({ id: `risk:signal:${sg.key}`, kind: "signal", title: `Live event with no FlytBase reply: ${head}`, detail: `${sg.title ? `${sg.title}. ` : ""}${sg.text}`, turnsBadOn: p, overdue: isOver(p), severity: 8, sources: sg.sources });
   }
 
   out.sort((a, b) => Number(b.overdue) - Number(a.overdue) || b.severity - a.severity || (a.turnsBadOn?.date ?? "9999").localeCompare(b.turnsBadOn?.date ?? "9999"));

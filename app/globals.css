@@ -311,3 +311,4 @@ details.more > .tags { margin-top: 6px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+.event-title { font-weight: 700; }

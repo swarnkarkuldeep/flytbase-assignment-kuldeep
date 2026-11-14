@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Bundle } from "../data.ts";
 import { normalizeSignals } from "../plan.ts";
+import { overlaySignalRecords } from "./inline.ts";
 
 export function bundleFromSnapshot(dir = "snapshot"): Bundle {
   const rd = (f: string) => (fs.existsSync(path.join(dir, f)) ? JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")) : null);
@@ -22,7 +23,7 @@ export function bundleFromSnapshot(dir = "snapshot"): Bundle {
     team: rd("get_flytbase_team.json")?.people ?? [],
     signals: sig ? normalizeSignals(sig) : [],
     signalsAt: null,
-    paperwork,
+    paperwork: overlaySignalRecords(paperwork, sig ? normalizeSignals(sig) : []),
     files,
     notes: null,
     index: {},

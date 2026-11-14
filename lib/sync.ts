@@ -26,6 +26,8 @@ export interface Status {
   lastError?: Meta["lastError"];
   log: LogEntry[];
   dry: boolean;
+  /** "paused" when write-back is switched off (AQ_WRITE_NOTES=0, or the Redis flag flag:writeback = "off") */
+  writeback?: "on" | "paused";
   busy?: boolean;
 }
 
@@ -53,9 +55,14 @@ function statusOf(store: Store, s: PlanState, index: Record<string, string>, ext
   };
 }
 
+/** The kill switch for write-back: an env var, or a Redis flag that can be flipped without a redeploy. */
+export async function writebackPaused(store: Store): Promise<boolean> {
+  return process.env.AQ_WRITE_NOTES === "0" || (await store.get<string>("flag:writeback")) === "off";
+}
+
 export async function getStatus(store: Store): Promise<Status> {
   const { s, index } = await loadPlanState(store, Date.now());
-  return statusOf(store, s, index);
+  return statusOf(store, s, index, { writeback: (await writebackPaused(store)) ? "paused" : "on" });
 }
 
 export async function enqueue(store: Store, jobs: Job[], front = true) {
@@ -106,7 +113,7 @@ async function afterResult(store: Store, job: Job, data: unknown) {
     // once the batch is out, re-read the notes so what we hold matches what the MCP holds
     const left = (await getQueue(store)).some((j) => j.tool === "write_note");
     if (!left) await enqueue(store, [{ tool: "list_notes", args: {}, reason: "verify what was written back" }], false);
-  } else if (changed) {
+  } else if (changed || (await replanDue(store))) {
     await planWriteBacks(store);
   }
 }
@@ -121,13 +128,22 @@ async function markWritten(store: Store, job: Job, status: "written" | "unknown"
 
 /** After the analysis can change, queue write_note jobs for anything not already written back. */
 async function planWriteBacks(store: Store) {
-  if (process.env.AQ_WRITE_NOTES === "0") return;
+  if (await writebackPaused(store)) return; // not marked as planned, so it plans at once when switched back on
   const index = await getIndex(store);
   if (!index["notes"]) return; // wait until we know what is already there
   const { analysis } = await getAnalysis(store);
   const notes = await getData<unknown>(store, "notes");
   const written = (await store.get<Written>("written")) ?? {};
-  await enqueue(store, planNotes(analysis, notes?.data, notes?.at ?? null, written), false);
+  // a note already waiting in the queue is not planned again, even if its wording has drifted since
+  const queued = new Set((await getQueue(store)).map((j) => refOf(j)).filter((r): r is string => !!r));
+  await enqueue(store, planNotes(analysis, notes?.data, notes?.at ?? null, written).filter((j) => !queued.has(refOf(j)!)), false);
+  await store.set("plannedAt", Date.now());
+}
+
+/** Planning also runs on a timer, so a switch flipped back on (or time passing) is picked up without new data. */
+const REPLAN_MS = Number(process.env.AQ_REPLAN_MS) || 5 * 60_000;
+async function replanDue(store: Store): Promise<boolean> {
+  return Date.now() - ((await store.get<number>("plannedAt")) ?? 0) > REPLAN_MS;
 }
 
 /**
@@ -146,6 +162,11 @@ export async function runSync(store: Store): Promise<{ status: Status; called: s
 
   try {
     const t = Date.now();
+    if (await writebackPaused(store)) {
+      // paused: drop any queued writes so none can go out
+      const q = await getQueue(store);
+      if (q.some((j) => j.tool === "write_note")) await store.set("queue", q.filter((j) => j.tool !== "write_note"));
+    }
     ({ s, index } = await loadPlanState(store, t)); // re-read under the lock
     if (tooSoon(s.meta, t)) return { status: statusOf(store, s, index), called: null };
 
@@ -174,6 +195,10 @@ export async function runSync(store: Store): Promise<{ status: Status; called: s
         await markWritten(store, job, "unknown");
         await removeFromQueue(store, job);
         await enqueue(store, [{ tool: "list_notes", args: {}, reason: "a write failed: check whether it landed" }], true);
+      } else if (/no such record|not found|unknown (file|record)/i.test(message)) {
+        // it does not exist (yet): retrying cannot help, so park it for the cooldown instead of burning calls
+        meta.fails[jk] = { n: 3, at: t };
+        await removeFromQueue(store, job);
       } else if (!(e instanceof RateLimitError)) {
         const f = meta.fails[jk] ?? { n: 0, at: 0 };
         meta.fails[jk] = { n: f.n + 1, at: t };

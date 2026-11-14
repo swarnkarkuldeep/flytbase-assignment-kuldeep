@@ -7,7 +7,7 @@ import type { Deadlines, ForceUsageResult, IdleDocks, OpenItem } from "./detect.
 import { checkRoiSheet } from "./book.ts";
 import { uniq } from "./util.ts";
 import { MORNING_NOTES } from "../hints.ts";
-import type { DealPower, Gap, Q1, SourceId } from "./types.ts";
+import type { DealPower, Gap, Q1, SignalView, SourceId } from "./types.ts";
 
 type Ask = Gap["whoCouldFill"][number];
 
@@ -19,6 +19,7 @@ export interface GapInputs {
   idle: IdleDocks | null;
   force: ForceUsageResult | null;
   deadlines: Deadlines;
+  signals?: SignalView[];
 }
 
 const stem = (w: string) => w.replace(/ies$/, "y").replace(/s$/, "");
@@ -68,7 +69,7 @@ function factSpeakers(ctx: Ctx, factIds: string[]): Ask[] {
 }
 
 export function buildGaps(inp: GapInputs): Gap[] {
-  const { ctx, q1, q2, items, idle, force, deadlines } = inp;
+  const { ctx, q1, q2, items, idle, force, deadlines, signals = [] } = inp;
   const A = ctx.account;
   const gaps: Gap[] = [];
   const push = (g: Gap) => gaps.push({ ...g, sources: uniq(g.sources) });
@@ -210,6 +211,20 @@ export function buildGaps(inp: GapInputs): Gap[] {
       id: "gap:roi-booked", kind: "unknown", title: "Is any of the claimed saving real? No guard contract is reduced and finance has booked none",
       whyItMatters: `The ${roi.plantRows} plant rows sum to ${roi.sum.toLocaleString("en-GB")}, ${roi.contractReduced} show a guard contract reduced and ${roi.bookedByFinance} are booked by finance. Until finance sees a measured change, it is a projection.`,
       whoCouldFill: dedupeAsks([...(fin ? [askStakeholder(ctx, fin.name, `Finance role on file (${fin.role}); would confirm what is booked.`, [fin.id, roi.fileId])] : []), ...factSpeakers(ctx, A.facts.filter((f) => f.verified_by === roi.fileId).map((f) => f.id))]), sources: [roi.fileId],
+    });
+  }
+
+  // ---- 7b. a live event that says someone is leaving and nobody has replaced them
+  for (const sg of signals) {
+    if (!/\b(leav\w+|moving on|moves on|departing|stepping down)\b/i.test(`${sg.title ?? ""} ${sg.text}`)) continue;
+    if (!/(no|not)\b[^.]*\b(successor|replacement|named|appointed)\b|successor[^.]*\b(not|yet)\b/i.test(sg.text)) continue;
+    const who = sg.people.map((id) => A.stakeholders.find((s) => s.id === id)).find(Boolean);
+    if (!who) continue;
+    push({
+      id: `gap:successor:${sg.key}`, kind: "unknown", title: `Who takes over from ${who.name}?`,
+      whyItMatters: `${who.name} is leaving and no successor is named. ${who.name} has been the account's only contact, so the renewal and every open ask lose their route in unless a second contact is found before they go.`,
+      whoCouldFill: [askStakeholder(ctx, who.name, `Says in the live event that ${/January|February|March/i.exec(sg.text)?.[0] ?? "they"} is the handover and a successor is not named yet.`, sg.sources)],
+      sources: sg.sources,
     });
   }
 

@@ -120,7 +120,16 @@ const PATH_RE = /\b(?:calls|emails|files)\/[\w.\-]+\.(?:txt|csv|json)\b|\b(?:pro
 
 /** Fetch jobs for any record or file a signal mentions. */
 export function jobsForSignal(sig: Signal, ctx: RefContext): Job[] {
-  const text = JSON.stringify(sig);
+  // Records a signal carries inline ({records:[{path:"A/emails/x.txt", text}]}) are already in hand: merged into
+  // the paperwork by lib/analysis/inline.ts, so there is nothing to fetch. Scan only the rest of the signal.
+  const { records, set_off_at: _setOff, ...rest } = sig as Signal & { records?: unknown; set_off_at?: unknown };
+  const inline = new Set<string>();
+  for (const r of Array.isArray(records) ? records : []) {
+    const p = String((r as { path?: unknown })?.path ?? "");
+    inline.add(p);
+    inline.add(p.replace(/^[A-Za-z0-9_-]+\//, ""));
+  }
+  const text = JSON.stringify(rest);
   const jobs: Job[] = [];
   const acctField = [sig.account, sig.account_id, sig.accountId].find((v): v is string => typeof v === "string" && ctx.accountIds.includes(v));
 
@@ -139,10 +148,12 @@ export function jobsForSignal(sig: Signal, ctx: RefContext): Job[] {
   }
   for (const list of Object.values(ctx.paths)) for (const p of list) if (!p.startsWith("files/") && text.includes(p)) paths.add(p);
 
-  // a signal about docks, flights or usage means the usage data may have moved: refresh that account's
-  if (acctField && /\b(docks?|flew|flown|flying|flights?|offline|usage|idle)\b/i.test(text)) {
+  // a signal about docks that stopped flying or went quiet means the usage data may have moved: refresh that
+  // account's. (A dock that "fails on the day" is a support question, not a usage change.)
+  if (acctField && /\bdocks?\b/i.test(text) && /\b(flew|flown|flying|idle|offline|no flights|not flown|stopped flying|nothing)\b/i.test(text)) {
     for (const p of ["usage_weekly.csv", "flights.csv", "device_events.csv"]) paths.add(p);
   }
+  for (const p of inline) paths.delete(p);
   for (const id of fileIds) jobs.push({ tool: "get_file", args: { id }, reason: "mentioned by a new signal" });
   for (const path of paths) {
     const owners = acctField

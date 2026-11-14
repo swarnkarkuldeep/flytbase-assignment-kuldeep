@@ -1,0 +1,38 @@
+[
+  {
+    "id": "champion_leaves",
+    "account": "A",
+    "dated": "2026-11-17",
+    "title": "Eastern Counties: Rhys Calder is moving on",
+    "summary": "Rhys Calder has emailed to say he leaves the drone programme in January. No successor is named. Every call on file before the handover was with him alone.",
+    "records": [
+      {
+        "kind": "email",
+        "path": "A/emails/2026-11-17_rhys_moving.txt",
+        "text": "From: Rhys Calder\nTo: (the CSM on the account)\nDate: 17 November 2026\nSubject: A change on my side\n\nA quick note so you hear it from me. I am moving to another role in the new year and will hand over the drone programme in January. My successor has not been named yet.\n\nAnything we have agreed stands. Until January, keep sending things to the programme office and I will make sure they land.\n\nRhys\n"
+      }
+    ],
+    "set_off_at": "2026-11-14T09:30:38.755Z"
+  },
+  {
+    "id": "urgent_request",
+    "account": "A",
+    "dated": "2026-11-18",
+    "title": "Eastern Counties: Westmere needs an answer before a public event",
+    "summary": "Insp. Karen Mbeki has written directly, and logged a ticket, ahead of a large public event on 5 December. She wants two things settled in writing this week: dates for training more operators before the day, and who answers if a dock fails on the day. Nobody has replied.",
+    "records": [
+      {
+        "kind": "email",
+        "path": "A/emails/2026-11-18_karen_event.txt",
+        "text": "From: Insp. Karen Mbeki\nTo: (the CSM on the account)\nDate: 18 November 2026\nSubject: Public event, 5 December\n\nWe are policing a large public event on Saturday 5 December and I want the docks to carry more of it than they do now.\n\nWhatever was said last week, I need two things settled in writing this week.\n1. Operators. How many more of my officers can be trained before the day, and when.\n2. Cover on the day. If a dock fails, who do I call and how fast does anyone answer.\n\nI am logging this as a ticket as well, so it has a number.\n\nKaren Mbeki\nWestmere drone unit\n"
+      },
+      {
+        "kind": "request",
+        "path": "A/requests.csv",
+        "note": "Row to add to the account's requests log.",
+        "text": "request_id,opened,from,summary,status,owner,last_update,how_it_arrived\nFB-11206,2026-11-18,Westmere drone unit,\"Operator training and support cover before a public event on 5 December. Marked urgent by the requester.\",Open,,2026-11-18,Support ticket\n"
+      }
+    ],
+    "set_off_at": "2026-11-14T09:30:42.574Z"
+  }
+]

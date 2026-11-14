@@ -10,7 +10,7 @@ import type { Ctx } from "./ctx.ts";
 import { words } from "./ctx.ts";
 import type { Deadlines, IdleDocks, OpenItem, ForceUsageResult } from "./detect.ts";
 import { RULES } from "./detect.ts";
-import { addDays, daysBetween, findDateInText, iso, money, uniq, ymd } from "./util.ts";
+import { addDays, daysBetween, findDateInText, findMonthInText, iso, money, uniq, ymd } from "./util.ts";
 import type { BookRow, Move, Q1, SignalView, SourceId } from "./types.ts";
 
 interface Deadline { label: string; date: string; derived: boolean; sources: SourceId[] }
@@ -23,9 +23,12 @@ export interface MoveInputs {
   force: ForceUsageResult | null;
   deadlines: Deadlines;
   signals: SignalView[];
+  /** the one customer contact who has been on every call since the current CSM started, if any */
+  single?: { who: string; since: string; calls: number; sources: SourceId[] } | null;
 }
 
 const stem = (w: string) => w.replace(/ies$/, "y").replace(/s$/, "");
+const mentionsName = (a: string, b: string) => !!a && !!b && (a.toLowerCase().includes(b.toLowerCase()) || b.toLowerCase().includes(a.toLowerCase()));
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
 export const SCORE = { unbackedWeight: 0.1, unbackedCap: 30_000, signalFloor: 3, ageBase: 3, ageMax: 2, ageDays: 60, staleFactor: 0.5 };
@@ -100,7 +103,7 @@ interface Cand {
 }
 
 export function buildMoves(inp: MoveInputs): { top: Move[]; considered: Move[] } {
-  const { ctx, q1, items, idle, force, deadlines, signals } = inp;
+  const { ctx, q1, items, idle, force, deadlines, signals, single } = inp;
   const cur = ctx.currency;
   const cands: Cand[] = [];
   const renewalRow = q1.rows.find((r) => /renew/i.test(r.title));
@@ -151,24 +154,40 @@ export function buildMoves(inp: MoveInputs): { top: Move[]; considered: Move[] }
     const personIds = g.person ? [g.person] : [];
     const text = g.texts.join(" ");
     const linked = linkDeals(ctx, q1.rows, text, personIds);
-    const oldest = g.items.reduce<OpenItem | null>((a, b) => (!a || (b.ageDays ?? 0) > (a.ageDays ?? 0) ? b : a), null);
+    // when a live event is about the one person every call has been with, the renewal rests on that person
+    const soleContact = !!(single && g.person && g.sigs.length > 0 && mentionsName(single.who, ctx.account.stakeholders.find((s) => s.id === g.person)?.name ?? ""));
+    if (soleContact && renewalRow && !linked.rows.some((r) => r.id === renewalRow.id)) {
+      linked.rows.push(renewalRow);
+      linked.why.push(`${g.label} has been on every call since ${single!.since}, so the renewal rests on this one person`);
+    }
+    // a call follow-up is a softer promise than an unanswered inbound ask: cap how long it counts as waiting
+    const sigSrc = new Set(g.sigs.flatMap((s) => s.sources));
+    const ofEvent = g.items.filter((i) => i.sources.some((s) => sigSrc.has(s))); // the event's own email and ticket row
+    const older = g.items.filter((i) => !ofEvent.includes(i));
+    const waited = older.reduce((m, i) => Math.max(m, i.kind === "followup" ? Math.min(i.ageDays ?? 0, 30) : (i.ageDays ?? 0)), 0);
     const owed = g.items.some((i) => i.weOwe) || g.sigs.length > 0;
     const dls: Deadline[] = [];
     for (const sg of g.sigs) {
-      const ev = findDateInText(sg.date ? sg.text.replace(sg.date, "") : sg.text, ctx.now);
+      const body = sg.date ? sg.text.replace(sg.date, "") : sg.text;
+      const ev = findDateInText(body, ctx.now);
+      const month = ev ? null : findMonthInText(body, sg.date ? ymd(sg.date) : ctx.now);
       if (ev && ev >= ctx.now) dls.push({ label: `Date named in the live event`, date: iso(ev), derived: true, sources: sg.sources });
+      else if (month) dls.push({ label: `Month named in the live event (no day given, counted from the 1st)`, date: iso(month), derived: true, sources: sg.sources });
       if (/this week/i.test(sg.text) && sg.date) dls.push({ label: `"this week" in the live event of ${sg.date}`, date: iso(addDays(ymd(sg.date), 7)), derived: true, sources: sg.sources });
     }
     const sold = linked.rows.filter((r) => r.type === "offer" && r.backed);
     const detail = [
-      ...g.sigs.map((sg) => `LIVE EVENT${sg.date ? ` (${sg.date})` : ""}: ${sg.text}. No FlytBase reply to it is on file.`),
+      ...g.sigs.map((sg) => `LIVE EVENT${sg.date ? ` (${sg.date})` : ""}: ${sg.title ? `${sg.title}. ` : ""}${sg.text} No FlytBase reply to it is on file.`),
       ...(sold.length && owed ? [`We sold ${sold.map((r) => `"${r.title}"`).join(" and ")} to ${g.label}, so what ${g.label} is asking for is a promise we owe.`] : []),
-      ...g.items.map((i) => `${i.weOwe ? "We owe" : "Chase"}: ${i.title} (since ${i.since}, ${i.ageDays} days). ${i.detail}`),
+      ...older.map((i) => `${i.weOwe ? "We owe" : "Chase"}: ${i.title} (since ${i.since}, ${i.ageDays} days). ${i.detail}`),
     ];
     const first = g.items[0];
     const total = g.items.length + g.sigs.length;
     let title: string;
-    if (g.sigs.length) title = `Respond to ${g.label}'s live event${total > 1 ? ` and ${g.items.length} older ask${g.items.length === 1 ? "" : "s"}` : ""}: ${g.sigs[0].text.slice(0, 80)}${g.sigs[0].text.length > 80 ? "…" : ""}`;
+    if (g.sigs.length) {
+      const head = g.sigs[0].headline ?? g.sigs[0].text.slice(0, 80);
+      title = `Respond to the live event: ${head}${older.length ? ` (and ${older.length} older ask${older.length === 1 ? "" : "s"} from ${g.label})` : ""}`;
+    }
     else if (total === 1 && first.kind === "ticket") title = first.waitingOn === "customer" ? `Chase ${g.label} on ${first.title}` : `Own and answer ticket ${first.title}`;
     else if (total === 1) title = `${first.kind === "unexplored" ? "Call" : first.weOwe ? "Reply to" : "Chase"} ${g.label}: ${first.title}`;
     else title = `${owed ? "Reply to" : "Chase"} ${g.label}: ${total} open asks (${g.items.map((i) => i.title.replace(/\.$/, "")).slice(0, 2).join("; ")}${total > 2 ? "…" : ""})`;
@@ -178,7 +197,7 @@ export function buildMoves(inp: MoveInputs): { top: Move[]; considered: Move[] }
       ? `the discovery record marks the blocker on ${linked.rows.map((r) => `"${r.title}"`).join(", ")} as cleared, so this ticket may only need closing: confirm it was actually sent`
       : undefined;
     cands.push({
-      id: `move:group:${key}`, title, detail, weOwe: owed, dls, text, ageDays: oldest?.ageDays ?? null,
+      id: `move:group:${key}`, title, detail, weOwe: owed, dls, text, ageDays: waited || null,
       sources: [...g.items.flatMap((i) => i.sources), ...g.sigs.flatMap((s) => s.sources)], rows: linked.rows, whyLinked: linked.why, hasSignal: g.sigs.length > 0, stale,
     });
   }

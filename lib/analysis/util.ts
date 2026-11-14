@@ -46,6 +46,21 @@ export function findDateInText(text: string, ref: Date): Date | null {
   return d;
 }
 
+const MONTH_NAMES = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+
+/**
+ * "leaves the programme in January" -> the 1st of the next January after `ref`.
+ * The text gives a month but no day, so callers label the result as derived.
+ */
+export function findMonthInText(text: string, ref: Date): Date | null {
+  const m = /\b(?:in|by|from|until|during|early|late|end of)\s+(January|February|March|April|May|June|July|August|September|October|November|December)\b/i.exec(text);
+  if (!m) return null;
+  const mi = MONTH_NAMES.indexOf(m[1].toLowerCase());
+  let d = new Date(Date.UTC(ref.getUTCFullYear(), mi, 1));
+  if (d <= ref) d = new Date(Date.UTC(ref.getUTCFullYear() + 1, mi, 1));
+  return d;
+}
+
 /** Tiny CSV parser: handles quoted fields with commas and "" escapes. */
 export function parseCsv(text: string): Record<string, string>[] {
   const rows: string[][] = [];

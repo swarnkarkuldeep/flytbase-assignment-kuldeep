@@ -4,6 +4,7 @@ import type { Bundle } from "./data.ts";
 import { signalViewKey } from "./analysis/detect.ts";
 import { MORNING_NOTES } from "./hints.ts";
 import { parseCsv } from "./analysis/util.ts";
+import { overlaySignalRecords } from "./analysis/inline.ts";
 
 export interface Resolved {
   id: string;
@@ -42,9 +43,10 @@ export function resolveSource(b: Bundle, id: string): Resolved | null {
       : { id, kind: "file", title: ref.title, content: ref, pending: true };
   }
   const m = /^([A-Za-z0-9]+):([^#]+)(?:#(.+))?$/.exec(id);
-  if (m && b.paperwork[m[1]]) {
+  const pw = m ? overlaySignalRecords(b.paperwork, b.signals) : b.paperwork;
+  if (m && pw[m[1]]) {
     const [, account, path, anchor] = m;
-    const rec = b.paperwork[account].find((r) => r.path === path);
+    const rec = pw[account].find((r) => r.path === path);
     if (!rec) return null;
     const whole = { id, kind: "record" as const, title: `${account}: ${path}`, content: rec.text ?? rec.data };
     if (!anchor) return whole;

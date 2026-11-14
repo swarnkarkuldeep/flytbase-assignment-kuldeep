@@ -27,7 +27,8 @@ The MCP allows **one call per minute per token, writes included**, and a serverl
 - Order: `whoami`, `get_data_format`, `get_my_accounts`, `get_all_paperwork` for each account, `get_flytbase_team`, `get_signals`. Then one `get_file` per file, then `list_notes`. After that it alternates `get_signals` and `whoami` forever.
 - A Redis lock (`SET NX` with expiry) stops two polls double-calling. The call time is recorded **before** the call, so a crash or failed call still counts against the rate limit.
 - `whoami` reports how many signals exist; if that differs from what is stored, `get_signals` jumps the queue.
-- When a new signal mentions a record or file, that fetch is queued. A signal about docks or flights also queues a refresh of that account's usage data. The analysis then re-runs on its own, so Q3 and Q4 update with no reload or code change.
+- A live event looks like `{ id, account, dated, title, summary, records: [{ path: "A/emails/…", text }] }`. The records it carries are merged straight into the paperwork (`lib/analysis/inline.ts`), so no MCP call is needed to read them. If an event mentions a record that is not inline, that fetch is queued; a record that turns out not to exist is asked for once, not retried. An event about docks that stopped flying also queues a refresh of that account's usage data. The analysis then re-runs on its own, so Q3 and Q4 update with no reload or code change.
+- **"Today"** is the later of the real clock and the latest live event's date, because the scenario dates its events ahead of the real clock. The page says so whenever it has moved.
 - A jammed queue cannot starve live events: after two non-poll calls, a poll goes next.
 - Failures: a job that fails three times is skipped for 15 minutes.
 
@@ -37,6 +38,8 @@ After the analysis runs, each account's top three next steps (`kind: "next_step"
 
 - Nothing is written twice: notes already in `list_notes`, or recorded as written, are skipped.
 - A write that errors is never retried blindly (it may have landed). The queue re-reads `list_notes` first and only redoes the write if it is still missing.
+- Planning runs when data changes and on a 5-minute timer. A note already waiting in the queue is never planned twice.
+- **Kill switch.** Notes cannot be deleted from the MCP, so write-back can be paused without a redeploy: set the Redis key `aq:flag:writeback` to `off` (or set `AQ_WRITE_NOTES=0`). While paused, queued writes are dropped and the page says so. Delete the key, or set it to `on`, to resume.
 
 ## How it decides (the rules engine, `lib/analysis/`)
 
@@ -112,7 +115,8 @@ tests/          planner, sync queue, analysis invariants, write-back
 
 ## What it does not do yet
 
-- The format of a live event is not known until one arrives, so the parser is tolerant and keeps the raw payload. A signal with no `account` field is matched to an account by name or by the people it mentions, and shown as "not tied to an account" if that fails.
+- A live event with no `account` field is matched to an account by name or by the people it mentions, and shown as "not tied to an account" if that fails. The parser keeps the raw payload and reads any other shape tolerantly, but it was built around the real format above.
+- Dates in an event's text are found by pattern ("5 December", "in January"). A month with no day is counted from the 1st and labelled derived.
 - Dock-level usage cannot be tied to a force or plant, because the install lists are not on file. The engine says so instead of guessing.
 - `get_feature_requests` and `get_release_notes` are not fetched, to save calls.
 - Notes written to the MCP cannot be deleted from here.

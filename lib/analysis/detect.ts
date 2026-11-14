@@ -375,28 +375,43 @@ export function findDeadlines(ctx: Ctx): Deadlines {
 }
 
 // ---------------------------------------------------------------- signals
-const DATE_KEYS = ["date", "at", "created_at", "timestamp", "time", "when", "ts", "occurred_at", "logged_at"];
+const DATE_KEYS = ["dated", "date", "at", "created_at", "timestamp", "time", "when", "ts", "occurred_at", "logged_at"];
 function flattenStrings(v: unknown, out: string[] = [], key = ""): string[] {
-  if (typeof v === "string") { if (!/^(id|signal_id|event_id|key|type|kind|account|account_id|accountId|date|at|created_at|timestamp|time|when|ts|occurred_at|logged_at)$/.test(key)) out.push(v); }
+  if (typeof v === "string") { if (!/^(id|signal_id|event_id|key|type|kind|account|account_id|accountId|dated|date|at|created_at|timestamp|time|when|ts|occurred_at|logged_at|set_off_at|records)$/.test(key)) out.push(v); }
   else if (typeof v === "number") { if (/count|days|hours/i.test(key)) out.push(`${key}: ${v}`); }
   else if (Array.isArray(v)) v.forEach((x) => flattenStrings(x, out, key));
   else if (v && typeof v === "object") for (const [k, x] of Object.entries(v)) flattenStrings(x, out, k);
   return out;
 }
 
+/**
+ * Real signals look like { id, account, dated, title, summary, records:[{path:"A/emails/x.txt", text}], set_off_at }.
+ * Use title and summary when present; for any other shape fall back to every string in it. Inline records are
+ * cited as sources (they are merged into the paperwork by lib/analysis/inline.ts).
+ */
 export function viewSignal(sig: Signal, ctx: Ctx): SignalView {
-  const parts = flattenStrings(sig);
-  const text = parts.join(" · ");
+  const s = sig as Record<string, unknown>;
+  const title = typeof s.title === "string" ? s.title : null;
+  const summary = typeof s.summary === "string" ? s.summary : null;
+  const text = summary ?? flattenStrings(sig).join(" · ");
   let date: string | null = null;
   for (const k of DATE_KEYS) {
-    const v = (sig as any)[k];
+    const v = s[k];
     if (typeof v === "string" && !Number.isNaN(Date.parse(v))) { date = v.slice(0, 10); break; }
     if (typeof v === "number") { date = new Date(v > 1e12 ? v : v * 1000).toISOString().slice(0, 10); break; }
   }
   if (!date) { const d = findDateInText(text, ctx.now); if (d) date = iso(d); }
-  const people = ctx.account.stakeholders.filter((s) => mentions(text, s.name)).map((s) => s.id);
+  const who = `${title ?? ""} ${text}`;
+  const people = ctx.account.stakeholders.filter((st) => mentions(who, st.name)).map((st) => st.id);
   const key = signalViewKey(sig);
-  return { key, text, date, accountId: null, people, raw: sig, sources: [`signal:${key}`] };
+  const inline = (Array.isArray(s.records) ? s.records : [])
+    .map((r) => /^([A-Za-z0-9_-]+)\/(.+)$/.exec(String((r as { path?: unknown })?.path ?? "")))
+    .filter((m): m is RegExpExecArray => !!m && m[1] === ctx.account.id)
+    .map((m) => `${m[1]}:${m[2]}`);
+  return {
+    key, title, headline: title ? title.replace(/^[^:]{2,60}:\s*/, "") : null, text, date, accountId: null, people, raw: sig,
+    sources: [`signal:${key}`, ...inline],
+  };
 }
 export function signalViewKey(sig: Signal): string {
   const id = (sig as any).id ?? (sig as any).signal_id ?? (sig as any).event_id;

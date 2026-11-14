@@ -24,6 +24,10 @@ before(async () => {
       const { name, arguments: args } = params;
       assert.match(String(req.headers.authorization), /^Bearer test-token$/);
       calls.push({ tool: name, args, t: Date.now() });
+      if (name === "get_paperwork_record" && /ghost/.test(String(args.path))) {
+        res.setHeader("content-type", "application/json");
+        return res.end(JSON.stringify({ jsonrpc: "2.0", id, result: { isError: true, content: [{ type: "text", text: "{\n \"error\": \"No such record. See /pack/A for the list.\"\n}" }] } }));
+      }
       let out: unknown;
       switch (name) {
         case "whoami": out = { ...snap("whoami.json"), signals: signals.length }; break;
@@ -104,6 +108,16 @@ test("a new signal is picked up without a code change and triggers a fetch of th
   assert.equal(b.signals.length, 1);
   assert.ok(b.paperwork.A.some((r: any) => r.path === "emails/2026-11-18_karen_event.txt" && r.text?.startsWith("FRESH")));
   assert.equal(b.paperwork.A.length, 36, "new record merged into the 35 on file");
+});
+
+test("a record that does not exist is asked for once, not retried", async () => {
+  signals = [...signals, { id: "sig-ghost", account: "A", text: "see emails/ghost_record.txt" }];
+  const before = calls.length;
+  for (let i = 0; i < 10; i++) await step();
+  const asks = calls.slice(before).filter((c) => c.tool === "get_paperwork_record" && /ghost/.test(String(c.args.path)));
+  assert.equal(asks.length, 1, "asked once, got 'No such record', and left it alone");
+  const st = await sync.getStatus(store);
+  assert.ok(!st.pending.some((p) => /ghost/.test(JSON.stringify(p.args))), "it is not left in the queue");
 });
 
 test("the token never appears in stored data or status", async () => {

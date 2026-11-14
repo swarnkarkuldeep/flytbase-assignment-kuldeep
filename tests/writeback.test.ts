@@ -51,6 +51,7 @@ before(async () => {
   await new Promise<void>((r) => server.listen(0, r));
   process.env.AQ_MCP_URL = `http://127.0.0.1:${(server.address() as any).port}`;
   process.env.AQ_TOKEN = "test-token";
+  process.env.AQ_REPLAN_MS = "60"; // re-plan on the next poll in tests
   process.env.AQ_MIN_GAP_MS = String(GAP);
   sync = await import("../lib/sync.ts");
   const { MemoryStore } = await import("../lib/store.ts");
@@ -61,7 +62,19 @@ after(() => server?.close());
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const t = have ? test : test.skip;
 
+t("the kill switch: with write-back paused (Redis flag), queued and planned writes never go out", async () => {
+  await store.set("flag:writeback", "off");
+  // a write already sitting in the queue must be dropped, not sent
+  await store.set("queue", [{ tool: "write_note", args: { account: "A", kind: "risk", title: "stale", text: "stale note [crm:ref:stale0a]" } }]);
+  for (let i = 0; i < 24; i++) { await sync.runSync(store); await wait(GAP + 15); }
+  assert.equal(calls.filter((c) => c.tool === "write_note").length, 0, "no write_note while paused");
+  assert.equal((await sync.getStatus(store)).writeback, "paused");
+  assert.ok(calls.some((c) => c.tool === "list_notes"), "everything else carried on (it read the notes)");
+  assert.ok(!((await store.get("queue")) as { tool: string }[] | null)?.some((j) => j.tool === "write_note"), "the queued write was purged");
+});
+
 t("every wanted note is written exactly once, even when a write errors; polls are never starved", async () => {
+  await store.set("flag:writeback", "on"); // switch it back on
   let guard = 0;
   let idleRounds = 0;
   while (guard++ < 120 && idleRounds < 6) {

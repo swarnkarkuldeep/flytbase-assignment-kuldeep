@@ -2,6 +2,7 @@
 import type { Bundle } from "../data.ts";
 import type { Signal } from "../types.ts";
 import { makeCtx } from "./ctx.ts";
+import { overlaySignalRecords } from "./inline.ts";
 import type { Ctx } from "./ctx.ts";
 import { buildQ1 } from "./book.ts";
 import { buildQ2 } from "./power.ts";
@@ -16,6 +17,11 @@ export interface Analysis {
   ready: boolean;
   missing: string[];
   generatedAt: string;
+  /**
+   * "Today" for every date calculation. It is the later of the real clock and the latest live event's date,
+   * because the scenario dates its events ahead of the real clock (e.g. 17 and 18 Nov).
+   */
+  clock: { real: string; world: string; shifted: boolean; because: string | null };
   accounts: AccountAnalysis[];
   /** every live event, including any that could not be tied to an account */
   signals: SignalView[];
@@ -40,16 +46,26 @@ export function analyse(bundle: Bundle, now = new Date()): Analysis {
   const exp = bundle.accounts?.data;
   const missing: string[] = [];
   if (!exp) missing.push("get_my_accounts");
-  const out: Analysis = { ready: false, missing, generatedAt: now.toISOString(), accounts: [], signals: [] };
+  const dated = bundle.signals.map((s) => ({ id: String((s as { id?: unknown }).id ?? ""), d: String((s as { dated?: unknown; date?: unknown }).dated ?? (s as { date?: unknown }).date ?? "").slice(0, 10) })).filter((x) => /^\d{4}-\d{2}-\d{2}$/.test(x.d)).sort((a, b) => a.d.localeCompare(b.d));
+  const latest = dated.at(-1);
+  const worldMs = latest ? Date.parse(`${latest.d}T09:00:00Z`) : 0;
+  const shifted = worldMs > now.getTime();
+  const realNow = now;
+  now = shifted ? new Date(worldMs) : now;
+  const out: Analysis = {
+    ready: false, missing, generatedAt: realNow.toISOString(), accounts: [], signals: [],
+    clock: { real: realNow.toISOString(), world: now.toISOString(), shifted, because: shifted ? latest!.id : null },
+  };
   if (!exp) return out;
-  for (const a of exp.accounts) if (!bundle.paperwork[a.id]?.length) missing.push(`get_all_paperwork ${a.id}`);
+  const paperwork = overlaySignalRecords(bundle.paperwork, bundle.signals); // records carried inline by live events
+  for (const a of exp.accounts) if (!paperwork[a.id]?.length) missing.push(`get_all_paperwork ${a.id}`);
   if (missing.length) return out;
 
   const base = (accountId: string, signals: Signal[]) => {
     const account = exp.accounts.find((a) => a.id === accountId)!;
     const refs = exp.files.filter((f) => !f.account || f.account === accountId);
     return makeCtx({
-      now, exportedAt: new Date(exp.exported_at), exportMinute: exp.minute, account, records: bundle.paperwork[accountId], fileRefs: refs,
+      now, exportedAt: new Date(exp.exported_at), exportMinute: exp.minute, account, records: paperwork[accountId], fileRefs: refs,
       files: Object.fromEntries(refs.filter((f) => bundle.files[f.id] !== undefined).map((f) => [f.id, bundle.files[f.id]])), signals, team: bundle.team,
     });
   };
@@ -75,9 +91,9 @@ export function analyse(bundle: Bundle, now = new Date()): Analysis {
     const contacts = contactTemperature(ctx);
     const single = singleThreaded(ctx);
     const q2 = buildQ2(ctx, q1, force, items);
-    const q3 = buildMoves({ ctx, q1, items, idle, force, deadlines, signals });
+    const q3 = buildMoves({ ctx, q1, items, idle, force, deadlines, signals, single });
     const q4 = buildRisks({ ctx, q1, items, idle, force, contacts, single, deadlines, signals });
-    const q5 = buildGaps({ ctx, q1, q2, items, idle, force, deadlines });
+    const q5 = buildGaps({ ctx, q1, q2, items, idle, force, deadlines, signals });
     const cur = ctx.currency;
     const barely = idle ? idle.byClass.never_flew.length + idle.byClass.went_quiet.length + idle.byClass.rarely.length : null;
     out.accounts.push({
